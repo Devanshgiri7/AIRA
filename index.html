@@ -1,0 +1,377 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>MindMates — FriendBot prototype</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root{
+      --bg:#f2f3f7; --card:#fff; --muted:#9aa0a6; --accent:#2b90ff;
+      --you-bg:#dcf8c6; --bot-bg:#ffffff;
+    }
+    *{box-sizing:border-box}
+    body{font-family:Inter, "Helvetica Neue", Arial; background:var(--bg); margin:0; padding:28px; color:#222}
+    .container{max-width:720px;margin:0 auto}
+    .header{display:flex;align-items:center;gap:12px;margin-bottom:12px}
+    .logo{
+      width:48px;height:48px;background:linear-gradient(135deg,#2b90ff,#7bb8ff);
+      border-radius:12px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:20px;
+      box-shadow:0 6px 18px rgba(43,144,255,.18);
+    }
+    h1{font-size:20px;margin:0}
+    .banner{font-size:12px;color:var(--muted);margin-top:6px}
+
+    /* card */
+    .card{background:var(--card);border-radius:12px;padding:16px;box-shadow:0 6px 18px rgba(15,15,20,.04)}
+
+    /* chat area */
+    .chat-wrap{display:flex;flex-direction:column;height:560px; gap:12px}
+    .messages{flex:1;overflow:auto;padding:14px;border-radius:10px;border:1px solid #eee;background:linear-gradient(180deg,#fbfdff,#ffffff)}
+    .msg{display:block;max-width:78%;padding:10px 12px;border-radius:12px;margin:8px 0;white-space:pre-wrap;word-wrap:break-word}
+    .bot{background:var(--bot-bg);align-self:flex-start;border:1px solid #eee}
+    .you{background:var(--you-bg);align-self:flex-end;text-align:right}
+    .meta{font-size:11px;color:var(--muted);margin-top:6px}
+
+    /* typing */
+    .typing {display:flex;gap:8px;align-items:center;padding:8px;border-radius:12px;border:1px solid #eee;width:180px}
+    .robot-icon{width:34px;height:34px;border-radius:8px;display:flex;align-items:center;justify-content:center;background:#eef6ff}
+    .dots{display:inline-block}
+    .dot{width:6px;height:6px;background:#7aa9ff;border-radius:50%;display:inline-block;margin:0 3px;animation:blink 1.1s infinite;}
+    .dot:nth-child(2){animation-delay:.15s} .dot:nth-child(3){animation-delay:.3s}
+    @keyframes blink{0%{opacity:.2}50%{opacity:1}100%{opacity:.2}}
+
+    /* controls */
+    .controls{display:flex;gap:8px;margin-top:8px;align-items:center}
+    input[type="text"]{flex:1;padding:12px;border-radius:10px;border:1px solid #ddd}
+    button{padding:10px 14px;border-radius:10px;border:0;background:var(--accent);color:#fff;cursor:pointer}
+    button.secondary{background:#fff;border:1px solid #ddd;color:#333}
+
+    /* crisis card */
+    .crisis{background:#fff0f0;border:1px solid #ffbdbd;padding:12px;border-radius:8px;color:#6b0b0b;margin-top:10px}
+
+    /* small foot */
+    .small{font-size:12px;color:var(--muted);margin-top:10px}
+
+    /* responsive */
+    @media (max-width:640px){
+      .container{padding:12px}
+      .chat-wrap{height:520px}
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="logo">Mm</div>
+      <div>
+        <h1>AIRA — FriendBot (Prototype)</h1>
+        <div class="banner">Prototype only — not a replacement for professional help.</div>
+      </div>
+    </div>
+
+    <div class="card chat-wrap">
+      <div id="messages" class="messages" aria-live="polite"></div>
+
+      <div id="crisisArea"></div>
+
+      <div class="controls">
+        <input id="input" type="text" placeholder="Say something... (try: hi, miss you, are you free)" />
+        <button id="send">Send</button>
+        <button id="clear" class="secondary">Clear</button>
+      </div>
+      <div class="small">Random pings will arrive like a friend. Notifications may appear if allowed.</div>
+    </div>
+  </div>
+
+<script>
+/* ---------- Configuration ---------- */
+const API_BASE = "http://localhost:3000"; // server proxy that calls OpenAI (see server.js)
+const TYPING_MIN = 2000; // ms (5 seconds)
+const TYPING_MAX = 4000; // ms (10 seconds)
+const PING_MIN = 8 * 60 * 1000; // random ping min interval (demo) - change to larger values for real app
+const PING_MAX = 10 * 60 * 1000; // random ping max interval
+/* ----------------------------------- */
+
+const messagesEl = document.getElementById('messages');
+const inputEl = document.getElementById('input');
+const sendBtn = document.getElementById('send');
+const clearBtn = document.getElementById('clear');
+const crisisArea = document.getElementById('crisisArea');
+
+const LOCAL_QA = [
+  { keys:['hi','hello','hey'], reply: "Hey! Nice to see you — how's your day?" },
+  { keys:['how are you','how r you','how r u'], reply: "I'm doing great — thanks! How about you?" },
+  { keys:['what are you doing','what r u doing'], reply: "Just hanging around, ready to chat with you." },
+  { keys:['miss you','i miss you'], reply: "Aww, I miss you too! Tell me something fun that happened today." },
+  { keys:['are you free','you free'], reply: "Yes, I'm here for you — what's on your mind?" },
+  { keys:['exam','test','study'], reply: "Good luck! Want a quick study break game?" }
+];
+
+const RANDOM_PINGS = [
+  "Hey, how's it going?",
+  "What are you doing right now?",
+  "I was thinking about you 😊",
+  "Bro are you free?",
+  "Miss you, come online soon!",
+  "What's the best thing that happened to you today?"
+];
+
+// let typingTimeout = null;
+// let pingTimeout = null; 
+// ---------- typing / user-activity tracking ----------
+let typingTimeout = null;
+let pingTimeout = null;
+let isUserTyping = false; // true while user is typing / has focus and recently typed
+
+// call this whenever a user starts typing
+function userStartedTyping() {
+  isUserTyping = true;
+  // clear / reset a debounce so we consider typing stopped after 2s of inactivity
+  if (typingTimeout) clearTimeout(typingTimeout);
+  typingTimeout = setTimeout(() => {
+    isUserTyping = false;
+    typingTimeout = null;
+  }, 2000); // 2 seconds after last keypress we consider typing stopped
+}
+
+// hook into the input events (you already have event listeners; add these lines)
+inputEl.addEventListener('keydown', (e) => {
+  // if the key is not just Enter (typing) set typing flag
+  if (e.key !== 'Enter') userStartedTyping();
+  // existing behavior: enter -> send
+  if (e.key === 'Enter') { e.preventDefault(); sendBtn.click(); return; }
+});
+
+// clear typing flag on blur (if user clicks away)
+inputEl.addEventListener('blur', () => {
+  isUserTyping = false;
+  if (typingTimeout) { clearTimeout(typingTimeout); typingTimeout = null; }
+});
+
+
+/* ---------- localStorage support ---------- */
+function saveMessages(store){
+  try{ localStorage.setItem('mindmates_msgs', JSON.stringify(store)); } catch(e){}
+}
+function loadMessages(){
+  try{ return JSON.parse(localStorage.getItem('mindmates_msgs')||'[]'); } catch(e){ return []; }
+}
+
+/* ---------- UI helpers ---------- */
+function appendMsg(text, cls='bot', meta=''){
+  const d = document.createElement('div');
+  d.className = 'msg ${cls}';
+  d.innerText = text;
+  if(meta){
+    const m = document.createElement('div'); m.className='meta'; m.innerText = meta;
+    d.appendChild(m);
+  }
+  messagesEl.appendChild(d);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  // persist
+  const store = loadMessages();
+  store.push({who:cls, text, meta, ts:Date.now()});
+  saveMessages(store);
+}
+
+function renderHistory(){
+  messagesEl.innerHTML = '';
+  const store = loadMessages();
+  for(const m of store){
+    const cls = m.who || 'bot';
+    appendMsg(m.text, cls, m.meta || '');
+  }
+}
+
+/* ---------- typing UI (robot icon + dots) ---------- */
+function showTypingBubble(){
+  removeTyping();
+  const wrap = document.createElement('div');
+  wrap.id = 'typingBubble';
+  wrap.className = 'msg bot typing';
+  wrap.innerHTML = `
+    <div class="robot-icon" aria-hidden="true">
+      <!-- simple robot SVG -->
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect x="4" y="7" width="16" height="10" rx="2" fill="#dfefff"/>
+        <rect x="9" y="3" width="6" height="4" rx="1.5" fill="#dfefff"/>
+        <circle cx="9.5" cy="12" r="1.1" fill="#7aa9ff"/>
+        <circle cx="14.5" cy="12" r="1.1" fill="#7aa9ff"/>
+      </svg>
+    </div>
+    <div class="dots" aria-hidden="true">
+      <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+    </div>
+  `;
+  messagesEl.appendChild(wrap);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function removeTyping(){
+  const t = document.getElementById('typingBubble');
+  if(t) t.remove();
+}
+
+/* ---------- crisis handling ---------- */
+function showCrisis(){
+  crisisArea.innerHTML = `<div class="crisis">
+    <strong>If you are thinking about harming yourself:</strong><br>
+    Please contact local emergency services or a trusted person immediately. Consider contacting your country's suicide prevention helpline.
+    <div style="margin-top:6px"><a href="https://www.who.int/health-topics/suicide" target="_blank">WHO suicide prevention resources</a></div>
+  </div>`;
+}
+
+/* ---------- local QA check ---------- */
+function checkLocalQA(text){
+  const t = text.toLowerCase();
+  for(const p of LOCAL_QA){
+    for(const k of p.keys){
+      if(t.includes(k)) return p.reply;
+    }
+  }
+  return null;
+}
+
+/* ---------- send message flow ---------- */
+async function sendMessage(userText){
+  if(!userText) return;
+  appendMsg(userText, 'you', new Date().toLocaleTimeString());
+  // remove previous crisis if any
+  crisisArea.innerHTML = '';
+
+  // local crisis quick check
+  const lower = userText.toLowerCase();
+  if(/(kill myself|i want to die|cant go on|no reason to live|suicid)/.test(lower)){
+    // show safe message and crisis
+    appendMsg("I'm really sorry you feel that way. If you're thinking about harming yourself, please seek immediate help.", 'bot');
+    showCrisis();
+    // return;
+  }
+
+  // local QA fallback
+  const localReply = checkLocalQA(userText);
+  if(localReply){
+    // simulate typing delay for friend-like feel
+    showTypingBubble();
+    const wait = randomBetween(TYPING_MIN, TYPING_MAX);
+    await waitMs(wait);
+    removeTyping();
+    appendMsg(localReply, 'bot');
+    return;
+  }
+
+  // ------------- GPT connection via backend -------------
+showTypingBubble();
+try {
+  const resp = await fetch(API_BASE + "/api/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      messages: [
+        { role: "system", content: "You are FriendBot, an informal supportive friend. Keep replies short, kind, and casual." },
+        { role: "user", content: userText }
+      ]
+    })
+  });
+
+  const data = await resp.json();
+  const modelReply = data?.reply ||
+                     data?.raw?.choices?.[0]?.message?.content ||
+                     "Sorry, I couldn't think of a reply right now.";
+
+  await waitMs(randomBetween(TYPING_MIN, TYPING_MAX));
+  removeTyping();
+  appendMsg(modelReply, 'bot');
+
+  if (/(suicid|kill myself|i want to die)/i.test(modelReply)) {
+    showCrisis();
+  }
+
+} catch (err) {
+  removeTyping();
+  appendMsg("Server error. Make sure the server is running.", 'bot');
+  console.error("sendMessage error:", err);
+}
+}
+
+/* ---------- random pings ---------- */
+// function scheduleNextPing(){
+//   const delay = randomBetween(PING_MIN, PING_MAX);
+//   if(pingTimeout) clearTimeout(pingTimeout);
+//   pingTimeout = setTimeout(()=> {
+//     sendRandomPing();
+//     scheduleNextPing();
+//   }, delay);
+// }
+/* ----------- random pings ----------- */
+function scheduleNextPing(){
+  const delay = randomBetween(PING_MIN, PING_MAX);
+
+  if (pingTimeout) clearTimeout(pingTimeout);
+
+  pingTimeout = setTimeout(() => {
+    // 🧠 skip ping if user is typing
+    if (isUserTyping) {
+      console.log("⏳ Skipping random ping — user is typing, will retry soon...");
+      // retry after 30 seconds
+      pingTimeout = setTimeout(() => scheduleNextPing(), 30 * 1000);
+      return;
+    }
+
+    // ✅ otherwise send random message
+    sendRandomPing();
+
+    // schedule the next one again
+    scheduleNextPing();
+  }, delay);
+}
+
+
+function sendRandomPing(){
+  const msg = RANDOM_PINGS[Math.floor(Math.random()*RANDOM_PINGS.length)];
+  // show notification if allowed
+  if(Notification && Notification.permission === 'granted'){
+    new Notification('FriendBot', { body: msg });
+  } else if(Notification){
+    Notification.requestPermission();
+  }
+  // show typing then message
+  showTypingBubble();
+  const typingDelay = randomBetween(TYPING_MIN, TYPING_MAX);
+  waitMs(typingDelay).then(()=> {
+    removeTyping();
+    appendMsg(msg, 'bot');
+  });
+}
+
+/* ---------- utilities ---------- */
+function randomBetween(min, max){ return Math.floor(Math.random()*(max-min))+min; }
+function waitMs(ms){ return new Promise(r=> setTimeout(r, ms)); }
+
+/* ---------- UI events ---------- */
+sendBtn.addEventListener('click', ()=> {
+  const v = inputEl.value.trim();
+  if(!v) return;
+  inputEl.value='';
+  sendMessage(v);
+});
+inputEl.addEventListener('keydown', (e)=> {
+  if(e.key === 'Enter'){ e.preventDefault(); sendBtn.click(); }
+});
+clearBtn.addEventListener('click', ()=>{
+  localStorage.removeItem('mindmates_msgs');
+  messagesEl.innerHTML='';
+  crisisArea.innerHTML='';
+  appendMsg("Hey! I'm FriendBot. I can be an informal friend and check in during the day. (Prototype)", 'bot');
+});
+
+/* ---------- startup ---------- */
+appendMsg("Hey! I'm FriendBot. I can be an informal friend and check in during the day. (Prototype)", 'bot');
+renderHistory();
+scheduleNextPing();
+
+// Ask notification permission quietly
+if(Notification && Notification.permission !== 'granted') Notification.requestPermission();
+</script>
+</body>
+</html>
